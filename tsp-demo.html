@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Transparent Science Platform: browser demo</title>
+<style>
+:root{--bg:#fff;--fg:#1c1c1e;--mut:#6b6b70;--line:#dcdce0;--chip:#f0f0f3;--acc:#2a5bd7;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#161618;--fg:#ececf0;--mut:#9a9aa2;--line:#33333a;--chip:#26262b;--acc:#7ea2ff}}
+:root[data-theme="dark"]{--bg:#161618;--fg:#ececf0;--mut:#9a9aa2;--line:#33333a;--chip:#26262b;--acc:#7ea2ff}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif}
+main{max-width:760px;margin:0 auto;padding:14px;overflow-wrap:anywhere}
+h1{font-size:1.25rem;margin:.3em 0}h2{font-size:1rem;margin:1.4em 0 .3em;border-bottom:1px solid var(--line)}
+.m{color:var(--mut);font-size:.85rem}.chip{display:inline-block;background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:0 .45em;margin:0 .25em .25em 0;font-size:.78rem}
+.card{border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin:9px 0}.card .card{margin-left:10px}
+.gone{opacity:.65}pre{white-space:pre-wrap;margin:.2em 0;font:inherit}
+button,input,select,textarea{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:7px 10px;max-width:100%}
+textarea,input[type=text]{width:100%;display:block;margin:5px 0}button{cursor:pointer;margin:3px 3px 3px 0}button.p{background:var(--acc);color:#fff;border-color:var(--acc)}
+a,.lnk{color:var(--acc);cursor:pointer;text-decoration:underline}summary{cursor:pointer;color:var(--acc);margin:6px 0}
+#msg{color:var(--acc);min-height:1.2em}
+</style></head><body><main id="app"></main>
+<script>
+const $=s=>document.querySelector(s), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const enc=new TextEncoder(), b64u=b=>btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+const canon=v=>v===null||typeof v!=='object'?JSON.stringify(v):Array.isArray(v)?'['+v.map(canon).join(',')+']':'{'+Object.keys(v).filter(k=>v[k]!==undefined).sort().map(k=>JSON.stringify(k)+':'+canon(v[k])).join(',')+'}';
+const sha=async s=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',enc.encode(s)))].map(b=>b.toString(16).padStart(2,'0')).join('');
+const ls={get(k,d){try{const v=localStorage.getItem(k);return v?JSON.parse(v):d}catch{return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+let recs=ls.get('tsp.recs',[]), me=null, view={claim:null,filter:''}, resetArmed=false;
+
+const LAB={awaiting_replication:'No live replication records.',replicated:'A live "success" replication by someone other than the claim author.',replication_failed:'A live "failure" replication by someone other than the claim author.',replication_mixed:'Both replicated and replication_failed hold. Both are shown.',self_replicated_only:'Replications exist, but only by the claim author.',no_critique:'No live critiques.',open_critique:'A live critique has no response.',major_critique_open:'An open critique that is self-declared major and includes evidence.',no_data_or_method:'The claim lists no data and no method.',superseded:'The author retracted or superseded this claim.'};
+
+async function freshMe(save){let p;try{const kp=await crypto.subtle.generateKey({name:'Ed25519'},true,['sign','verify']);const jwk=await crypto.subtle.exportKey('jwk',kp.privateKey);p={pub:jwk.x,jwk,signed:true,priv:kp.privateKey}}catch{p={pub:b64u(crypto.getRandomValues(new Uint8Array(32))),signed:false}}if(save)ls.set('tsp.me',{pub:p.pub,jwk:p.jwk,signed:p.signed});return p}
+async function loadMe(){const s=ls.get('tsp.me',null);if(s){try{if(s.signed)s.priv=await crypto.subtle.importKey('jwk',s.jwk,{name:'Ed25519'},false,['sign']);return s}catch{}}return freshMe(true)}
+async function add(p,type,body){const rec={spec:'tsp/0.1',type,created_at:new Date().toISOString().replace(/\.\d+Z$/,'Z'),author:'ed25519:'+p.pub,body};const c=canon(rec),id='tsp:'+(await sha(c)).slice(0,20);if(recs.some(r=>r.id===id))return id;const sig=p.signed?b64u(await crypto.subtle.sign('Ed25519',p.priv,enc.encode(c))):'unsigned';recs.push({id,rec:{...rec,sig},at:Date.now()});ls.set('tsp.recs',recs);return id}
+
+const T=id=>recs.filter(r=>r.rec.body.target===id);
+const ret=r=>T(r.id).find(d=>d.rec.type==='deprecation'&&['superseded','retracted_by_author'].includes(d.rec.body.reason)&&d.rec.author===r.rec.author);
+const live=r=>!ret(r);
+function labels(c){const reps=T(c.id).filter(r=>r.rec.type==='replication'),lr=reps.filter(live),lc=T(c.id).filter(r=>r.rec.type==='critique'&&live(r)),ind=lr.filter(r=>r.rec.author!==c.rec.author);
+const open=lc.filter(k=>!T(k.id).some(x=>x.rec.type==='response'&&live(x))),major=open.filter(k=>k.rec.body.severity==='major'&&k.rec.body.evidence.length);
+const ok=ind.filter(r=>r.rec.body.result==='success').length,bad=ind.filter(r=>r.rec.body.result==='failure').length,b=c.rec.body,s=new Set();
+if(!lr.length)s.add('awaiting_replication');if(ok)s.add('replicated');if(bad)s.add('replication_failed');if(ok&&bad)s.add('replication_mixed');if(lr.length&&!ind.length)s.add('self_replicated_only');if(!lc.length)s.add('no_critique');if(open.length)s.add('open_critique');if(major.length)s.add('major_critique_open');if(!b.data.length&&!b.method.length)s.add('no_data_or_method');if(ret(c))s.add('superseded');
+return{l:Object.keys(LAB).filter(k=>s.has(k)),ok,bad,rep:lr.length,crit:lc.length,open:open.length}}
+
+const who=p=>`<code>${esc(p.slice(8,14))}</code>${me&&p==='ed25519:'+me.pub?' <b>(you)</b>':''}`;
+const chips=l=>l.map(k=>`<span class="chip" title="${esc(LAB[k])}">${k}</span>`).join('');
+const refs=a=>a.length?a.map(x=>`<div class="m">sha256:${esc(x.hash.slice(7,19))}… ${esc(x.note||'')}</div>`).join(''):'<div class="m">None listed.</div>';
+const msg=t=>{const e=$('#msg');if(e)e.textContent=t};
+const v=id=>$('#'+id).value.trim();
+
+function parseF(s){const t=[],bad=[];for(const w of s.split(',').map(x=>x.trim()).filter(Boolean)){const n=w[0]==='!',k=n?w.slice(1):w;if(LAB[k])t.push({k,n});else bad.push(k)}return{t,bad}}
+function items(){const f=parseF(view.filter);const all=recs.filter(r=>r.rec.type==='claim').reverse();
+const rows=all.map(c=>({c,x:labels(c)})).filter(({x})=>f.t.every(t=>x.l.includes(t.k)!==t.n));
+$('#items').innerHTML=(f.bad.length?`<p class="m">Unknown label: ${esc(f.bad.join(', '))}</p>`:'')+`<p class="m">Showing ${rows.length} of ${all.length}, newest first. Filter: ${f.t.length?esc(f.t.map(t=>(t.n?'NOT ':'')+t.k).join(' AND ')):'none'}.</p>`+
+rows.map(({c,x})=>`<div class="card ${x.l.includes('superseded')?'gone':''}"><a data-act="open" data-id="${esc(c.id)}"><b>${esc(c.rec.body.title)}</b></a><div class="m">${esc(c.rec.body.kind)} · ${who(c.rec.author)}</div>${chips(x.l)}<div class="m">replications ${x.rep} (✓${x.ok} ✗${x.bad}) · critiques ${x.crit}, open ${x.open}</div></div>`).join('')}
+
+function head(){return`<div class="m">You: ${who('ed25519:'+me.pub).replace(' <b>(you)</b>','')} · ${me.signed?'signing with Ed25519':'Ed25519 unavailable in this browser: records are unsigned'} <a data-act="newid">new identity</a></div><div id="msg" class="m"></div>`}
+function foot(){return`<p class="m">Demo only. Everything stays in this browser (not shared, not a server). Differences from the real prototype: no proof-of-work, base64url keys, signatures are not re-verified. Data and method are text descriptions that get hashed.</p>`}
+
+function list(){view.claim=null;$('#app').innerHTML=`<h1>Transparent Science Platform</h1><p class="m">Demo of the open cycle: claim → critique → independent replication → mechanical labels. No scores, no official view.</p>${head()}
+<p><button class="p" data-act="shownew">+ New claim</button><button data-act="demo">Load demo data</button><button data-act="reset">${resetArmed?'Tap again to erase all':'Reset'}</button></p>
+<div id="newform" hidden><input type="text" id="nt" placeholder="Claim title" maxlength="300"><textarea id="ns" rows="3" placeholder="Statement"></textarea><textarea id="nd" rows="2" placeholder="Data (describe or paste; optional)"></textarea><textarea id="nm" rows="2" placeholder="Method (describe or paste; optional)"></textarea><select id="nk"><option>theoretical</option><option>computational</option><option>experimental</option></select> <button class="p" data-act="subclaim">Publish (permanent)</button></div>
+<label class="m" for="flt">Filter (optional): labels separated by commas, "!" negates. Example: replicated,!major_critique_open</label><input type="text" id="flt" value="${esc(view.filter)}"><div id="items"></div>${foot()}`;items()}
+
+function recCard(r,inner){const g=ret(r);return`<div class="card ${g?'gone':''}"><div class="m">${who(r.rec.author)} · ${esc(r.rec.created_at.slice(0,10))} · <code>${esc(r.id.slice(0,12))}</code>${g?' <span class="chip">retracted by its author (still shown)</span>':''}${me&&r.rec.author==='ed25519:'+me.pub&&!g?` <a data-act="retract" data-id="${esc(r.id)}">retract</a>`:''}</div>${inner}</div>`}
+function claim(id){const c=recs.find(r=>r.id===id);if(!c)return list();view.claim=id;const b=c.rec.body,x=labels(c);
+const reps=T(id).filter(r=>r.rec.type==='replication'),crs=T(id).filter(r=>r.rec.type==='critique');
+$('#app').innerHTML=`<a data-act="home">← All claims</a><h1>${esc(b.title)}</h1>${head()}${recCard(c,'')}<div>${chips(x.l)}</div><p class="m">Labels are mechanical facts about the records, not verdicts on truth. Tap a label to read its rule.</p>
+<h2>Statement</h2><pre>${esc(b.statement)}</pre><h2>Data</h2>${refs(b.data)}<h2>Method</h2>${refs(b.method)}
+<h2>Replications (${reps.length})</h2>${reps.map(r=>recCard(r,`<b>${esc(r.rec.body.result)}</b> · ${esc(r.rec.body.fidelity)}${r.rec.author===c.rec.author?' <span class="chip">by claim author</span>':''}<pre>${esc(r.rec.body.notes)}</pre>`)).join('')||'<p class="m">None yet.</p>'}
+<details><summary>Add a replication</summary><select id="rr"><option>success</option><option>failure</option><option>inconclusive</option></select> <select id="rf"><option>same_method</option><option>modified_method</option></select><textarea id="rn" rows="2" placeholder="Notes (required if modified_method)"></textarea><button class="p" data-act="subrep">Publish</button><p class="m">Tip: to see "independent" labels, replicate someone else's claim. Your own replication counts as "by claim author".</p></details>
+<h2>Critiques (${crs.length})</h2>${crs.map(k=>{const rs=T(k.id).filter(r=>r.rec.type==='response');return recCard(k,`<b>${esc(k.rec.body.category)}</b> · severity (self-declared): ${esc(k.rec.body.severity)}<pre>${esc(k.rec.body.text)}</pre>${k.rec.body.evidence.length?refs(k.rec.body.evidence):''}${rs.map(s=>recCard(s,`<b>${esc(s.rec.body.resolution)}</b><pre>${esc(s.rec.body.text)}</pre>`)).join('')||'<div class="m"><i>No response yet.</i></div>'}<details><summary>Respond</summary><select id="sr${esc(k.id)}"><option>rebuttal</option><option>concession</option><option>clarification</option></select><textarea id="st${esc(k.id)}" rows="2" placeholder="Response"></textarea><button class="p" data-act="subresp" data-id="${esc(k.id)}">Publish</button></details>`)}).join('')||'<p class="m">None yet.</p>'}
+<details><summary>Add a critique</summary><select id="cc"><option>methodology</option><option>data</option><option>statistical</option><option>logical</option><option>scope</option><option>other</option></select> <select id="cs"><option>minor</option><option>major</option></select><textarea id="ct" rows="3" placeholder="Critique"></textarea><textarea id="ce" rows="2" placeholder="Evidence (optional text; makes a major critique count as major_critique_open)"></textarea><button class="p" data-act="subcrit">Publish</button></details>
+<h2>Record</h2><details><summary>Show signed record (JSON)</summary><pre>${esc(JSON.stringify({id:c.id,...c.rec},null,1))}</pre></details>${foot()}`}
+
+document.addEventListener('input',e=>{if(e.target.id==='flt'){view.filter=e.target.value;items()}});
+document.addEventListener('click',async e=>{
+ const lab=e.target.closest('.chip[title]');if(lab&&!e.target.closest('[data-act]')){msg(lab.textContent+': '+lab.title);return}
+ const el=e.target.closest('[data-act]');if(!el)return;const a=el.dataset.act,id=el.dataset.id;
+ if(a!=='reset')resetArmed=false;
+ if(a==='open')claim(id);else if(a==='home')list();
+ else if(a==='shownew')$('#newform').hidden=false;
+ else if(a==='newid'){me=await freshMe(true);view.claim?claim(view.claim):list();msg('New anonymous identity created.')}
+ else if(a==='demo'){await demo();list();msg('Demo data loaded.')}
+ else if(a==='reset'){if(!resetArmed){resetArmed=true;list();return}recs=[];ls.set('tsp.recs',[]);resetArmed=false;list()}
+ else if(a==='subclaim'){const t=v('nt'),s=v('ns');if(!t||!s)return msg('Title and statement are required.');const R=async x=>x?[{hash:'sha256:'+await sha(x),note:x.slice(0,200)}]:[];claim(await add(me,'claim',{title:t,statement:s,field:'quant-ph',kind:$('#nk').value,data:await R(v('nd')),method:await R(v('nm'))}))}
+ else if(a==='subcrit'){const t=v('ct');if(!t)return msg('Write the critique first.');const ev=v('ce');await add(me,'critique',{target:view.claim,category:v('cc'),severity:v('cs'),text:t,evidence:ev?[{hash:'sha256:'+await sha(ev),note:ev.slice(0,200)}]:[]});claim(view.claim)}
+ else if(a==='subrep'){const n=v('rn');if(v('rf')==='modified_method'&&!n)return msg('Describe the deviations in the notes.');await add(me,'replication',{target:view.claim,mode:'computational',fidelity:v('rf'),result:v('rr'),notes:n});claim(view.claim)}
+ else if(a==='subresp'){const t=v('st'+id);if(!t)return msg('Write the response first.');await add(me,'response',{target:id,resolution:v('sr'+id),text:t});claim(view.claim)}
+ else if(a==='retract'){await add(me,'deprecation',{target:id,reason:'retracted_by_author',text:'Retracted by author.'});claim(view.claim)}
+});
+
+async function demo(){const[A,B,C,D]=await Promise.all([1,2,3,4].map(()=>freshMe(false)));const R=async n=>({hash:'sha256:'+await sha('demo:'+n),note:n});
+ const c1=await add(A,'claim',{title:'[DEMO] Simulation X reproduces quantity Q within 1e-6',statement:'SYNTHETIC DEMO. Not real physics. A simulation with parameters P yields Q matching a reference within tolerance.',field:'quant-ph',kind:'computational',data:[await R('data')],method:[await R('code')]});
+ await add(B,'replication',{target:c1,mode:'computational',fidelity:'same_method',result:'success',notes:'Reran the code; matched.'});
+ await add(C,'replication',{target:c1,mode:'computational',fidelity:'modified_method',result:'failure',notes:'Different integrator; result differs by 3e-3.'});
+ await add(D,'critique',{target:c1,category:'statistical',severity:'major',text:'The 1e-6 tolerance is not justified by the error analysis.',evidence:[await R('analysis')]});
+ await add(C,'claim',{title:'[DEMO] A claim with no data or method',statement:'SYNTHETIC DEMO. Asserts something without data or a method.',field:'quant-ph',kind:'theoretical',data:[],method:[]});
+ const c3=await add(A,'claim',{title:'[DEMO] Analytical result Y holds for all N',statement:'SYNTHETIC DEMO. A derivation claims result Y.',field:'hep-th',kind:'theoretical',data:[],method:[await R('derivation')]});
+ await add(A,'replication',{target:c3,mode:'computational',fidelity:'same_method',result:'success',notes:'Author re-ran their own check.'});
+ const k=await add(B,'critique',{target:c3,category:'logical',severity:'minor',text:'Step 4 assumes N is even.',evidence:[]});
+ await add(A,'response',{target:k,resolution:'concession',text:'Correct. Revising the claim.'})}
+
+(async()=>{me=await loadMe();list()})();
+</script></body></html>
